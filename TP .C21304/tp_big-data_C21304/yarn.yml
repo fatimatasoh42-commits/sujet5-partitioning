@@ -1,0 +1,158 @@
+version: "3.8"
+
+# =============================================================================
+# TP3 YARN — Solution 1 : Cluster Hadoop avec ResourceManager + NodeManager
+# Mémoire NodeManager : 4096 Mo | Allocation max par Container : 2048 Mo
+# =============================================================================
+#
+# Démarrage : docker-compose -f yarn.yml up -d
+# Arrêt     : docker-compose -f yarn.yml down
+# Logs      : docker-compose -f yarn.yml logs -f resourcemanager
+# Interface : http://localhost:8088
+
+networks:
+  # Réseau bridge dédié au cluster Hadoop (isolation des services)
+  hadoop_reseau_s1:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+
+services:
+
+  # ─── NameNode HDFS ──────────────────────────────────────────────────────────
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode_s1
+    hostname: namenode
+    restart: unless-stopped
+    environment:
+      - CLUSTER_NAME=hadoop_tp3_s1
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - CORE_CONF_hadoop_http_staticuser_user=root
+      - HDFS_CONF_dfs_replication=1
+      - HDFS_CONF_dfs_namenode_datanode_registration_ip___hostname___check=false
+    ports:
+      # Interface Web NameNode (Browse filesystem, santé des blocs)
+      - "9870:9870"
+      # Port RPC du NameNode (communication avec clients et DataNodes)
+      - "9000:9000"
+    volumes:
+      - hadoop_namenode_s1:/hadoop/dfs/name
+    networks:
+      - hadoop_reseau_s1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9870"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ─── DataNode HDFS ──────────────────────────────────────────────────────────
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode_s1
+    hostname: datanode
+    restart: unless-stopped
+    environment:
+      - SERVICE_PRECONDITION=namenode:9870
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - HDFS_CONF_dfs_replication=1
+    volumes:
+      - hadoop_datanode_s1:/hadoop/dfs/data
+    depends_on:
+      - namenode
+    networks:
+      - hadoop_reseau_s1
+
+  # ─── ResourceManager YARN ───────────────────────────────────────────────────
+  resourcemanager:
+    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+    container_name: resourcemanager_s1
+    hostname: resourcemanager
+    restart: unless-stopped
+    environment:
+      - SERVICE_PRECONDITION=namenode:9000 namenode:9870 datanode:9864
+      - CLUSTER_NAME=hadoop_tp3_s1
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      # Configuration du Capacity Scheduler
+      - YARN_CONF_yarn_resourcemanager_scheduler_class=org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler
+      # Activation de la préemption
+      - YARN_CONF_yarn_resourcemanager_scheduler_monitor_enable=true
+      - YARN_CONF_yarn_resourcemanager_monitor_capacity_preemption_enabled=true
+    ports:
+      # Interface Web YARN ResourceManager (monitoring des jobs)
+      - "8088:8088"
+      # Port RPC du ResourceManager
+      - "8032:8032"
+    depends_on:
+      - namenode
+      - datanode
+    networks:
+      - hadoop_reseau_s1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/ws/v1/cluster/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ─── NodeManager YARN ───────────────────────────────────────────────────────
+  # Solution 1 : 4096 Mo de mémoire totale, 2048 Mo max par container
+  nodemanager:
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    container_name: nodemanager_s1
+    hostname: nodemanager
+    restart: unless-stopped
+    environment:
+      - SERVICE_PRECONDITION=namenode:9000 namenode:9870 datanode:9864 resourcemanager:8088
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      # ── Mémoire disponible sur ce NodeManager ──────────────────────────────
+      # Total : 4096 Mo allouables à YARN sur ce nœud
+      - YARN_CONF_yarn_nodemanager_resource_memory___mb=4096
+      # ── Limites par Container ──────────────────────────────────────────────
+      # Un seul container ne peut pas recevoir plus de 2048 Mo
+      - YARN_CONF_yarn_scheduler_maximum___allocation___mb=2048
+      # Minimum allouable par container (granularité)
+      - YARN_CONF_yarn_scheduler_minimum___allocation___mb=256
+      # ── Configuration CPU ──────────────────────────────────────────────────
+      - YARN_CONF_yarn_nodemanager_resource_cpu___vcores=4
+      - YARN_CONF_yarn_scheduler_maximum___allocation___vcores=4
+      - YARN_CONF_yarn_scheduler_minimum___allocation___vcores=1
+      # ── Désactivation de la vérification de mémoire virtuelle (Docker) ────
+      - YARN_CONF_yarn_nodemanager_vmem___check___enabled=false
+      - YARN_CONF_yarn_nodemanager_pmem___check___enabled=false
+    ports:
+      # Interface Web NodeManager
+      - "8042:8042"
+    depends_on:
+      - resourcemanager
+    networks:
+      - hadoop_reseau_s1
+
+  # ─── HistoryServer MapReduce ─────────────────────────────────────────────────
+  historyserver:
+    image: bde2020/hadoop-historyserver:2.0.0-hadoop3.2.1-java8
+    container_name: historyserver_s1
+    hostname: historyserver
+    restart: unless-stopped
+    environment:
+      - SERVICE_PRECONDITION=namenode:9000 namenode:9870 datanode:9864 resourcemanager:8088
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    ports:
+      # Interface Web du History Server (historique des jobs MapReduce)
+      - "8188:8188"
+    depends_on:
+      - resourcemanager
+    volumes:
+      - hadoop_historyserver_s1:/hadoop/yarn/timeline
+    networks:
+      - hadoop_reseau_s1
+
+# ─── Volumes persistants ───────────────────────────────────────────────────────
+volumes:
+  hadoop_namenode_s1:
+    driver: local
+  hadoop_datanode_s1:
+    driver: local
+  hadoop_historyserver_s1:
+    driver: local

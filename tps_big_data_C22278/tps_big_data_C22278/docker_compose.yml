@@ -1,0 +1,95 @@
+# ============================================================
+# Fichier : yarn.yml
+# Rôle : Configuration Docker Compose pour YARN (ResourceManager + NodeManager)
+# Utilisation : docker-compose -f yarn.yml up -d
+# ============================================================
+
+# Version de la syntaxe Docker Compose
+version: "3"
+
+# Définition des services (conteneurs)
+services:
+
+  # --------------------------------------------------------
+  # Service 1 : ResourceManager (chef d'orchestre YARN)
+  # --------------------------------------------------------
+  resourcemanager:
+    # Image Docker officielle de Hadoop ResourceManager
+    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+    # Nom du conteneur (pour le référencer facilement)
+    container_name: resourcemanager
+    # Nom d'hôte interne au réseau Docker
+    hostname: resourcemanager
+    
+    # Variables d'environnement passées au conteneur
+    environment:
+      # Nom du cluster Hadoop
+      - CLUSTER_NAME=hadoop_fst
+      # Configuration du système de fichiers par défaut (HDFS)
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    
+    # Mappage des ports (hôte:conteneur)
+    ports:
+      - "8088:8088"   # Interface Web du ResourceManager
+    
+    # Réseau Docker auquel le conteneur appartient
+    networks:
+      - hadoop_net
+    
+    # Vérification de l'état de santé du conteneur
+    healthcheck:
+      # Test : curl vers l'interface Web du ResourceManager
+      test: ["CMD", "curl", "-f", "http://localhost:8088"]
+      interval: 30s   # Test toutes les 30 secondes
+      timeout: 10s    # Délai maximum d'attente de réponse
+      retries: 3      # Nombre d'échecs avant de déclarer "unhealthy"
+
+  # --------------------------------------------------------
+  # Service 2 : NodeManager (exécuteur de tâches sur un nœud)
+  # --------------------------------------------------------
+  nodemanager:
+    # Image Docker officielle de Hadoop NodeManager
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    # Nom du conteneur
+    container_name: nodemanager
+    # Nom d'hôte interne
+    hostname: nodemanager
+    
+    # Variables d'environnement
+    environment:
+      # Condition préalable : ResourceManager doit être accessible sur le port 8088
+      - SERVICE_PRECONDITION=resourcemanager:8088
+      
+      # ============================================
+      # CONFIGURATION DES RESSOURCES (modifiable)
+      # ============================================
+      
+      # Mémoire totale disponible pour YARN sur ce NodeManager (en Mo)
+      # Valeur par défaut : 4096 Mo (4 Go)
+      - YARN_CONF_yarn_nodemanager_resource_memory-mb=4096
+      
+      # Mémoire maximale allouable à un seul container (en Mo)
+      # Ne peut pas dépasser yarn_nodemanager_resource_memory-mb
+      - YARN_CONF_yarn_scheduler_maximum-allocation-mb=2048
+      
+      # Dossier local pour les données temporaires des conteneurs
+      - YARN_CONF_yarn_nodemanager_local_dirs=/tmp/hadoop-yarn/local
+      
+      # Dossier pour les logs des conteneurs
+      - YARN_CONF_yarn_nodemanager_log_dirs=/tmp/hadoop-yarn/logs
+    
+    # Dépendance : nodemanager attend que resourcemanager soit "healthy"
+    depends_on:
+      resourcemanager:
+        condition: service_healthy
+    
+    # Réseau Docker
+    networks:
+      - hadoop_net
+
+# ============================================================
+# Configuration du réseau Docker
+# ============================================================
+networks:
+  hadoop_net:
+    driver: bridge   # Type de réseau : bridge (par défaut)
